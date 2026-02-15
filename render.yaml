@@ -3,6 +3,12 @@ services:
     name: concrete-rebar-resisto
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app:app --host 0.0.0.0 --port 10000"
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    pythonVersion: 3.11.9
     autoDeploy: true
+    envVars:
+      - key: MPLCONFIGDIR
+        value: /tmp/matplotlib
+      - key: PYTHONUNBUFFERED
+        value: "1"
