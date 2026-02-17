@@ -7,11 +7,10 @@
 #    - aperture blu (rettangolo, lw=1.4)
 #    - rinforzo/overlay linee NERE (forzato per grid/grid_full)
 #    - label panel_id al centro
-# 2) PDF: header SOLO in prima pagina; dalla seconda in poi niente header (già fatto).
+# 2) PDF: header SOLO in prima pagina; dalla seconda in poi niente header.
 # 3) ZIP: contiene:
 #      - Report_resisto59_completo.pdf
 #      - schema_posa_resisto59.dxf
-#    (DXF generato come nel tuo approccio: struttura + aperture + rinforzo linee)
 #
 # Endpoint:
 #   GET  /health
@@ -25,7 +24,7 @@ from __future__ import annotations
 
 import re
 import zipfile
-from io import BytesIO
+from io import BytesIO, StringIO
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -55,7 +54,7 @@ except ImportError:
 # ============================================================
 # FASTAPI
 # ============================================================
-app = FastAPI(title="Resisto 5.9 Export", version="2.2.0")
+app = FastAPI(title="Resisto 5.9 Export", version="2.2.1")
 
 
 class Payload(RootModel[Dict[str, Any]]):
@@ -174,13 +173,11 @@ def _grid_axes_from_body(body: dict) -> Tuple[List[float], List[float], List[flo
     spB = list(map(float, beams.get("spessori_cm", []) or []))  # travi (orizzontali) per ogni asse y
     spC = list(map(float, cols.get("spessori_cm", []) or []))   # pilastri (verticali) per ogni asse x
 
-    # fallback coerenti
     if not spB:
         spB = [30.0] * max(1, len(y))
     if not spC:
         spC = [30.0] * max(1, len(x))
 
-    # allinea lunghezze (come Jupyter)
     if len(spB) != len(y):
         spB = (spB[:len(y)] + [spB[-1]] * max(0, len(y) - len(spB)))
     if len(spC) != len(x):
@@ -218,52 +215,28 @@ def plot_schema_to_png_bytes(body: dict, overlay_id: str = "grid", figsize=(11, 
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect("equal")
 
-    # ===== struttura grigia (identica) =====
+    # struttura grigia
     if x and y:
         x_min = x[0] - spC[0] / 2
         x_max = x[-1] + spC[-1] / 2
         for yy, sp in zip(y, spB):
-            ax.add_patch(
-                Rectangle(
-                    (x_min, yy - sp / 2),
-                    x_max - x_min,
-                    sp,
-                    facecolor="#d0d0d0",
-                    edgecolor="none",
-                    zorder=0,
-                )
-            )
+            ax.add_patch(Rectangle((x_min, yy - sp / 2), x_max - x_min, sp,
+                                   facecolor="#d0d0d0", edgecolor="none", zorder=0))
 
         y_min = y[0] - spB[0] / 2
         y_max = y[-1] + spB[-1] / 2
         for xx, sp in zip(x, spC):
-            ax.add_patch(
-                Rectangle(
-                    (xx - sp / 2, y_min),
-                    sp,
-                    y_max - y_min,
-                    facecolor="#a0a0a0",
-                    edgecolor="none",
-                    zorder=0,
-                )
-            )
+            ax.add_patch(Rectangle((xx - sp / 2, y_min), sp, y_max - y_min,
+                                   facecolor="#a0a0a0", edgecolor="none", zorder=0))
 
-    # ===== aperture blu (da panels[].openings) =====
+    # aperture blu
     for p in body.get("panels", []) or []:
         for w in (p.get("openings") or []):
-            ax.add_patch(
-                Rectangle(
-                    (float(w["x"]), float(w["y"])),
-                    float(w["w"]),
-                    float(w["h"]),
-                    fill=False,
-                    edgecolor="blue",
-                    linewidth=1.4,
-                    zorder=1,
-                )
-            )
+            ax.add_patch(Rectangle((float(w["x"]), float(w["y"])),
+                                   float(w["w"]), float(w["h"]),
+                                   fill=False, edgecolor="blue", linewidth=1.4, zorder=1))
 
-    # ===== overlay lines (rinforzo nero forzato per grid/grid_full) =====
+    # overlay (rinforzo nero forzato per grid/grid_full)
     force_black = overlay_id in {"grid", "grid_full"}
     for e in ov.get("entities", []) or []:
         if e.get("type") != "line":
@@ -271,33 +244,25 @@ def plot_schema_to_png_bytes(body: dict, overlay_id: str = "grid", figsize=(11, 
         (x1, y1) = e.get("a", [0, 0])
         (x2, y2) = e.get("b", [0, 0])
         st = e.get("style", {}) or {}
-
         color = "black" if force_black else st.get("stroke", "#111")
         lw = float(st.get("width", 1.0))
         dash = st.get("dash", []) or []
         z = 3 if force_black else 4
 
-        ln, = ax.plot([float(x1), float(x2)], [float(y1), float(y2)], color=color, linewidth=lw, zorder=z)
+        ln, = ax.plot([float(x1), float(x2)], [float(y1), float(y2)],
+                      color=color, linewidth=lw, zorder=z)
         if dash:
             ln.set_dashes(dash)
 
-    # ===== panel_id al centro (identico) =====
+    # label panel_id
     for p in body.get("panels", []) or []:
         b = p.get("bounds", {}) or {}
         cx = (float(b.get("xmin", 0)) + float(b.get("xmax", 0))) / 2.0
         cy = (float(b.get("ymin", 0)) + float(b.get("ymax", 0))) / 2.0
         pid = p.get("panel_id", f"{p.get('i','?')},{p.get('j','?')}")
-        ax.text(
-            cx,
-            cy,
-            str(pid),
-            ha="center",
-            va="center",
-            fontsize=11,
-            fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.65),
-            zorder=10,
-        )
+        ax.text(cx, cy, str(pid), ha="center", va="center", fontsize=11, fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.65),
+                zorder=10)
 
     ax.set_xlim(xmin - 10, xmax + 10)
     ax.set_ylim(ymin - 10, ymax + 10)
@@ -310,6 +275,7 @@ def plot_schema_to_png_bytes(body: dict, overlay_id: str = "grid", figsize=(11, 
     bio = BytesIO()
     fig.savefig(bio, format="png", dpi=300)
     plt.close(fig)
+    bio.seek(0)
     return bio.getvalue()
 
 
@@ -324,10 +290,10 @@ def _get_points(panel: dict, curve_name: str) -> Tuple[List[float], List[float]]
     for p in pts:
         if "x" in p and "y" in p:
             x = float(p["x"])
-            y = float(p["y"]) / 1000.0  # N -> kN
+            y = float(p["y"]) / 1000.0
         elif "d" in p and "F" in p:
             x = float(p["d"])
-            y = float(p["F"]) / 1000.0  # N -> kN
+            y = float(p["F"]) / 1000.0
         else:
             continue
         xs.append(x)
@@ -347,17 +313,10 @@ def _set_ticks_only_final(ax, x_final: List[float], y_final: List[float]) -> Non
     yt = sorted(set([round(float(v), 6) for v in y_final]))
     ax.set_xticks(xt)
     ax.set_yticks(yt)
-
-    ax.set_xticklabels(
-        [f"{v:.2f}".rstrip("0").rstrip(".") if abs(v) >= 1e-12 else "0" for v in xt],
-        color="blue",
-        fontweight="bold",
-    )
-    ax.set_yticklabels(
-        [f"{v:.1f}".rstrip("0").rstrip(".") if abs(v) >= 1e-12 else "0" for v in yt],
-        color="blue",
-        fontweight="bold",
-    )
+    ax.set_xticklabels([f"{v:.2f}".rstrip("0").rstrip(".") if abs(v) >= 1e-12 else "0" for v in xt],
+                       color="blue", fontweight="bold")
+    ax.set_yticklabels([f"{v:.1f}".rstrip("0").rstrip(".") if abs(v) >= 1e-12 else "0" for v in yt],
+                       color="blue", fontweight="bold")
 
 
 def _fmt(v: Any, nd: int = 3) -> str:
@@ -416,61 +375,26 @@ def plot_nl_panel_to_png_bytes(panel: dict) -> bytes:
     ax.set_ylim(ymin, ymax)
 
     if x_low:
-        ln_low, = ax.plot(
-            x_low,
-            y_low,
-            color="black",
-            linewidth=1.0,
-            linestyle="--",
-            marker="o",
-            markersize=3,
-            label=f"Abaco precedente {passo_low} mm",
-            zorder=1,
-            alpha=0.80,
-        )
+        ln_low, = ax.plot(x_low, y_low, color="black", linewidth=1.0, linestyle="--",
+                          marker="o", markersize=3, label=f"Abaco precedente {passo_low} mm",
+                          zorder=1, alpha=0.80)
         ln_low.set_dashes([6, 4])
 
     if x_high:
-        ln_high, = ax.plot(
-            x_high,
-            y_high,
-            color="red",
-            linewidth=1.0,
-            linestyle="--",
-            marker="o",
-            markersize=3,
-            label=f"Abaco successivo {passo_high} mm",
-            zorder=2,
-            alpha=0.85,
-        )
+        ln_high, = ax.plot(x_high, y_high, color="red", linewidth=1.0, linestyle="--",
+                           marker="o", markersize=3, label=f"Abaco successivo {passo_high} mm",
+                           zorder=2, alpha=0.85)
         ln_high.set_dashes([6, 4])
 
     if x_interp:
-        ln_int, = ax.plot(
-            x_interp,
-            y_interp,
-            color="green",
-            linewidth=1.8,
-            linestyle="--",
-            marker="o",
-            markersize=3,
-            label=f"Interpolazione al passo {avg_passo_mm} mm",
-            zorder=3,
-            alpha=1.0,
-        )
+        ln_int, = ax.plot(x_interp, y_interp, color="green", linewidth=1.8, linestyle="--",
+                          marker="o", markersize=3, label=f"Interpolazione al passo {avg_passo_mm} mm",
+                          zorder=3, alpha=1.0)
         ln_int.set_dashes([10, 2])
 
-    ax.plot(
-        x_final,
-        y_final,
-        linestyle="-",
-        color="blue",
-        linewidth=6.0,
-        marker="o",
-        markersize=5,
-        label=f"Curva da calcolo (ratio = {ratio})",
-        zorder=4,
-    )
+    ax.plot(x_final, y_final, linestyle="-", color="blue", linewidth=6.0,
+            marker="o", markersize=5, label=f"Curva da calcolo (ratio = {ratio})",
+            zorder=4)
 
     _set_ticks_only_final(ax, x_final, y_final)
 
@@ -482,13 +406,8 @@ def plot_nl_panel_to_png_bytes(panel: dict) -> bytes:
     ke_t = fr.get("Ke_T", None)
     ke_c = fr.get("Ke_C", None)
 
-    bbox_kw = dict(
-        boxstyle="round,pad=0.25",
-        facecolor="white",
-        edgecolor="black",
-        linewidth=0.8,
-        alpha=0.95,
-    )
+    bbox_kw = dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="black",
+                   linewidth=0.8, alpha=0.95)
 
     x_pos = 0.06 * (xmax - xmin)
     y_pos = 0.06 * (ymax - ymin)
@@ -497,49 +416,27 @@ def plot_nl_panel_to_png_bytes(panel: dict) -> bytes:
 
     if ke_t is not None:
         ke_t_kn = float(ke_t) / 1000.0
-        ax.text(
-            0 + x_pos,
-            0 + y_pos,
-            f"Ke_T = {ke_t_kn:.1f} kN/mm",
-            ha="left",
-            va="bottom",
-            fontsize=10,
-            fontweight="bold",
-            color="blue",
-            bbox=bbox_kw,
-            zorder=20,
-        )
+        ax.text(0 + x_pos, 0 + y_pos, f"Ke_T = {ke_t_kn:.1f} kN/mm",
+                ha="left", va="bottom", fontsize=10, fontweight="bold",
+                color="blue", bbox=bbox_kw, zorder=20)
 
     if ke_c is not None:
         ke_c_kn = float(ke_c) / 1000.0
-        ax.text(
-            0 + x_neg,
-            0 + y_neg,
-            f"Ke_C = {ke_c_kn:.1f} kN/mm",
-            ha="left",
-            va="top",
-            fontsize=10,
-            fontweight="bold",
-            color="blue",
-            bbox=bbox_kw,
-            zorder=20,
-        )
+        ax.text(0 + x_neg, 0 + y_neg, f"Ke_C = {ke_c_kn:.1f} kN/mm",
+                ha="left", va="top", fontsize=10, fontweight="bold",
+                color="blue", bbox=bbox_kw, zorder=20)
 
     ax.legend(loc="upper left", framealpha=0.95)
 
-    Fy_T = fr.get("Fy_T", None)
-    dy_T = fr.get("dy_T", None)
-    Fu_T = fr.get("Fu_T", None)
-    du_T = fr.get("du_T", None)
-    Fy_C = fr.get("Fy_C", None)
-    dy_C = fr.get("dy_C", None)
-    Fu_C = fr.get("Fu_C", None)
-    du_C = fr.get("du_C", None)
+    Fy_T = fr.get("Fy_T", None); dy_T = fr.get("dy_T", None)
+    Fu_T = fr.get("Fu_T", None); du_T = fr.get("du_T", None)
+    Fy_C = fr.get("Fy_C", None); dy_C = fr.get("dy_C", None)
+    Fu_C = fr.get("Fu_C", None); du_C = fr.get("du_C", None)
 
     table_rows = [
         ["Fu_T [kN]", _fmt(_kn(Fu_T), 1), "du_T [mm]", _fmt(du_T, 1)],
         ["Fy_T [kN]", _fmt(_kn(Fy_T), 1), "dy_T [mm]", _fmt(dy_T, 1)],
-        ["0 [kN]", "0", "0 [mm]", "0"],
+        ["0 [kN]",    "0",                "0 [mm]",    "0"],
         ["Fy_C [kN]", _fmt(_kn(-Fy_C), 1), "dy_C [mm]", _fmt(-dy_C, 1)],
         ["Fu_C [kN]", _fmt(_kn(-Fu_C), 1), "du_C [mm]", _fmt(-du_C, 1)],
     ]
@@ -549,7 +446,7 @@ def plot_nl_panel_to_png_bytes(panel: dict) -> bytes:
             table_rows = [
                 ["Fu_T [kN]", _fmt(y_final[4], 1), "du_T [mm]", _fmt(x_final[4], 1)],
                 ["Fy_T [kN]", _fmt(y_final[3], 1), "dy_T [mm]", _fmt(x_final[3], 1)],
-                ["0 [kN]", "0", "0 [mm]", "0"],
+                ["0 [kN]",    "0",                "0 [mm]",    "0"],
                 ["Fy_C [kN]", _fmt(y_final[1], 1), "dy_C [mm]", _fmt(x_final[1], 1)],
                 ["Fu_C [kN]", _fmt(y_final[0], 1), "du_C [mm]", _fmt(x_final[0], 1)],
             ]
@@ -576,11 +473,12 @@ def plot_nl_panel_to_png_bytes(panel: dict) -> bytes:
     bio = BytesIO()
     fig.savefig(bio, format="png", dpi=300)
     plt.close(fig)
+    bio.seek(0)
     return bio.getvalue()
 
 
 # ============================================================
-# DXF EXPORT (schema_posa_resisto59.dxf)
+# DXF EXPORT (schema_posa_resisto59.dxf) — FIX: stream testuale -> bytes UTF-8
 # ============================================================
 def export_schema_dxf_bytes(body: dict, overlay_id: str = "grid") -> bytes:
     if ezdxf is None:
@@ -594,29 +492,31 @@ def export_schema_dxf_bytes(body: dict, overlay_id: str = "grid") -> bytes:
     doc = ezdxf.new(setup=True)
     msp = doc.modelspace()
 
-    # layer (come tuo esempio)
+    # layers
     if "Struttura" not in doc.layers:
         doc.layers.new("Struttura", dxfattribs={"color": 1})
     if "Resisto" not in doc.layers:
         doc.layers.new("Resisto", dxfattribs={"color": 7})
 
     def rect(x1, y1, x2, y2, layer="Struttura"):
-        msp.add_lwpolyline([(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)],
-                           dxfattribs={"layer": layer})
+        msp.add_lwpolyline(
+            [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)],
+            dxfattribs={"layer": layer},
+        )
 
-    # struttura: pilastri verticali
+    # pilastri verticali
     y_min = y[0] - spB[0] / 2
     y_max = y[-1] + spB[-1] / 2
     for xx, sp in zip(x, spC):
         rect(xx - sp / 2, y_min, xx + sp / 2, y_max, layer="Struttura")
 
-    # struttura: travi orizzontali
+    # travi orizzontali
     x_min = x[0] - spC[0] / 2
     x_max = x[-1] + spC[-1] / 2
     for yy, sp in zip(y, spB):
         rect(x_min, yy - sp / 2, x_max, yy + sp / 2, layer="Struttura")
 
-    # aperture (blu nel png, qui su Struttura)
+    # aperture
     for p in body.get("panels", []) or []:
         for w in (p.get("openings") or []):
             rect(
@@ -627,21 +527,23 @@ def export_schema_dxf_bytes(body: dict, overlay_id: str = "grid") -> bytes:
                 layer="Struttura",
             )
 
-    # rinforzo: solo linee overlay, layer Resisto
-    force_black = overlay_id in {"grid", "grid_full"}  # solo “concetto”: in DXF è layer Resisto
+    # rinforzo overlay (linee) su layer Resisto
     for e in ov.get("entities", []) or []:
         if e.get("type") != "line":
             continue
         a = e.get("a", [0, 0])
         b = e.get("b", [0, 0])
-        msp.add_line((float(a[0]), float(a[1])), (float(b[0]), float(b[1])),
-                     dxfattribs={"layer": "Resisto"})
+        msp.add_line(
+            (float(a[0]), float(a[1])),
+            (float(b[0]), float(b[1])),
+            dxfattribs={"layer": "Resisto"},
+        )
 
-    # write to bytes
-    bio = BytesIO()
-    # ezdxf supporta write su stream binario tramite doc.write / doc.saveas; qui stream:
-    doc.write(bio)  # type: ignore[attr-defined]
-    return bio.getvalue()
+    # ✅ write DXF as TEXT, then encode -> bytes (compatibile con writestr)
+    sio = StringIO()
+    doc.write(sio)
+    txt = sio.getvalue()
+    return txt.encode("utf-8")
 
 
 # ============================================================
@@ -695,7 +597,7 @@ def build_report_pdf_bytes(*, header_lines: List[str], schema_png: bytes, tampon
     mem = BytesIO()
     c = canvas.Canvas(mem, pagesize=A4)
 
-    # ====== PAGINA 1: schema + header + footer ======
+    # PAGINA 1: schema + header + footer
     c.setFont(FONT_BOLD, 14)
     c.drawCentredString(W / 2, H - 0.80 * cm, "Schema di posa Resisto 5.9")
 
@@ -713,7 +615,7 @@ def build_report_pdf_bytes(*, header_lines: List[str], schema_png: bytes, tampon
     _footer(c, W, H)
     c.showPage()
 
-    # ====== PAGINE SUCCESSIVE: 2 tamponamenti per pagina, NO HEADER ======
+    # PAGINE SUCCESSIVE: 2 tamponamenti per pagina, NO HEADER
     slot_gap = 0.6 * cm
     top_margin = 1.2 * cm
     bottom_margin = 2.2 * cm
@@ -786,17 +688,17 @@ def export(
             f"Parete: {wall_orientation} | Revisione: {suffix}",
         ]
 
-        # ===== 1) schema png (GENERATO, stile Jupyter) =====
+        # 1) schema png (GENERATO, stile Jupyter)
         schema_png = plot_schema_to_png_bytes(
             body,
             overlay_id=overlay_id,
             figsize=(11 * float(schema_scale), 8 * float(schema_scale)),
         )
 
-        # ===== 2) DXF (GENERATO) =====
+        # 2) DXF bytes (GENERATO, robusto)
         dxf_bytes = export_schema_dxf_bytes(body, overlay_id=overlay_id)
 
-        # ===== 3) tamponamenti: grafico NL identico Jupyter =====
+        # 3) tamponamenti: grafico NL identico Jupyter
         panels = body.get("panels") or []
         _must(len(panels) > 0, "panels vuoto: niente tamponamenti da inserire nel PDF")
 
@@ -815,22 +717,22 @@ def export(
                 )
             )
 
-        # ===== 4) PDF bytes =====
+        # 4) PDF bytes
         pdf_bytes = build_report_pdf_bytes(
             header_lines=header_lines,
             schema_png=schema_png,
             tamponamenti=tamponamenti,
         )
 
-        # ===== 5) ZIP in memoria =====
+        # 5) ZIP in memoria
         zip_filename = f"{job_id}_allegati.zip"
         pdf_name_in_zip = "Report_resisto59_completo.pdf"
         dxf_name_in_zip = "schema_posa_resisto59.dxf"
 
         mem_zip = BytesIO()
         with zipfile.ZipFile(mem_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            z.writestr(pdf_name_in_zip, pdf_bytes)
-            z.writestr(dxf_name_in_zip, dxf_bytes)
+            z.writestr(pdf_name_in_zip, pdf_bytes)      # bytes
+            z.writestr(dxf_name_in_zip, dxf_bytes)      # bytes
 
         mem_zip.seek(0)
         return StreamingResponse(
